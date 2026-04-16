@@ -41,8 +41,8 @@ def run_tick(db: OrchestratorDB, dry_run: bool = False) -> list[dict]:
             actions.extend(_check_agent_health(db, build, sprint, backend, dry_run))
             actions.extend(_check_heartbeat(db, build, sprint, dry_run))
 
-        # 3. Check sprint progression
-        actions.extend(_check_sprint_progression(db, build, sprints, dry_run))
+        # 3. Check sprint progression (spawn agents for ready sprints)
+        actions.extend(_check_sprint_progression(db, build, sprints, backend, dry_run))
 
         # 4. Check build completion
         actions.extend(_check_build_completion(db, build, dry_run))
@@ -215,23 +215,129 @@ def _check_agent_health(
 
 
 def _check_sprint_progression(
-    db: OrchestratorDB, build: dict, sprints: list[dict], dry_run: bool
+    db: OrchestratorDB, build: dict, sprints: list[dict],
+    backend, dry_run: bool,
 ) -> list[dict]:
-    """Advance ready sprints — DAG-aware parallel progression."""
-    actions = []
-    ready = _get_ready_sprints(sprints)
+    """Advance ready sprints — DAG-aware parallel progression.
 
+    Handles two cases:
+    1. CONTRACTED sprints with deps met → spawn generator → BUILDING
+    2. EVALUATING sprints without active evaluator → spawn evaluator
+    """
+    from .generator import get_generator_spawn_args  # noqa: PLC0415
+    from .evaluator import get_evaluator_spawn_args  # noqa: PLC0415
+    from .adapter import needs_session_lock  # noqa: PLC0415
+
+    actions = []
+    build_id = build["id"]
+
+    # Case 1: Spawn generators for ready sprints
+    ready = _get_ready_sprints(sprints)
     for sprint in ready:
-        if not dry_run:
-            # Mark as ready for spawning (status stays CONTRACTED,
-            # the spawner picks it up on the next tick)
-            pass  # Sprint is already CONTRACTED — spawner will handle it
-        actions.append({
-            "action": "sprint_ready",
-            "build_id": build["id"],
-            "sprint_id": sprint["id"],
-            "sprint_number": sprint["sprint_number"],
-        })
+        if dry_run:
+            actions.append({
+                "action": "sprint_ready",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "sprint_number": sprint["sprint_number"],
+            })
+            continue
+
+        # Check session lock for CC agents
+        if needs_session_lock("generator") and is_session_locked():
+            actions.append({
+                "action": "session_locked",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "role": "generator",
+            })
+            continue
+
+        try:
+            spawn_args = get_generator_spawn_args(db, build_id, sprint["id"])
+            session_id = backend.spawn(**spawn_args)
+
+            # Record agent log so health checks can find it
+            db.create_agent_log(
+                build_id=build_id,
+                agent="generator",
+                sprint_id=sprint["id"],
+                session_id=session_id,
+                log_path=spawn_args["log_path"],
+            )
+
+            transition_sprint(db, sprint["id"], SprintStatus.BUILDING)
+
+            actions.append({
+                "action": "generator_spawned",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "sprint_number": sprint["sprint_number"],
+                "session_id": session_id,
+            })
+        except Exception as e:
+            actions.append({
+                "action": "spawn_error",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "role": "generator",
+                "error": str(e),
+            })
+
+    # Case 2: Spawn evaluators for sprints awaiting evaluation
+    for sprint in sprints:
+        if sprint["status"] != SprintStatus.EVALUATING:
+            continue
+
+        # Check if evaluator already spawned for this sprint
+        logs = db.get_agent_logs(build_id, sprint_id=sprint["id"])
+        has_evaluator = any(lg["agent"] == "evaluator" for lg in logs)
+        if has_evaluator:
+            continue
+
+        if dry_run:
+            actions.append({
+                "action": "evaluator_ready",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+            })
+            continue
+
+        if needs_session_lock("evaluator") and is_session_locked():
+            actions.append({
+                "action": "session_locked",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "role": "evaluator",
+            })
+            continue
+
+        try:
+            spawn_args = get_evaluator_spawn_args(db, build_id, sprint["id"])
+            session_id = backend.spawn(**spawn_args)
+
+            db.create_agent_log(
+                build_id=build_id,
+                agent="evaluator",
+                sprint_id=sprint["id"],
+                session_id=session_id,
+                log_path=spawn_args["log_path"],
+            )
+
+            actions.append({
+                "action": "evaluator_spawned",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "session_id": session_id,
+            })
+        except Exception as e:
+            actions.append({
+                "action": "spawn_error",
+                "build_id": build_id,
+                "sprint_id": sprint["id"],
+                "role": "evaluator",
+                "error": str(e),
+            })
 
     return actions
 
@@ -239,7 +345,7 @@ def _check_sprint_progression(
 def _check_build_completion(
     db: OrchestratorDB, build: dict, dry_run: bool
 ) -> list[dict]:
-    """Transition build to REVIEWING if all sprints passed."""
+    """Transition build to REVIEWING if all sprints passed, or FAILED if stuck."""
     if build["status"] != BuildStatus.BUILDING:
         return []
 
@@ -248,10 +354,31 @@ def _check_build_completion(
         return []
 
     all_passed = all(s["status"] == SprintStatus.PASSED for s in sprints)
+    any_terminal_fail = any(
+        s["status"] in (SprintStatus.FAILED, SprintStatus.ESCALATED)
+        for s in sprints
+    )
 
     if all_passed:
         if not dry_run:
             transition_build(db, build["id"], BuildStatus.REVIEWING)
         return [{"action": "build_to_review", "build_id": build["id"]}]
+
+    if any_terminal_fail:
+        # Only fail the build if no sprints are still in-progress
+        in_progress = any(
+            s["status"] in (SprintStatus.BUILDING, SprintStatus.EVALUATING,
+                            SprintStatus.CONTRACTED)
+            for s in sprints
+        )
+        if not in_progress:
+            failed_ids = [
+                s["id"] for s in sprints
+                if s["status"] in (SprintStatus.FAILED, SprintStatus.ESCALATED)
+            ]
+            if not dry_run:
+                transition_build(db, build["id"], BuildStatus.FAILED)
+            return [{"action": "build_failed", "build_id": build["id"],
+                     "failed_sprints": failed_ids}]
 
     return []

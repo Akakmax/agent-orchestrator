@@ -125,8 +125,8 @@ class OrchestratorDB:
         for sql in migrations:
             try:
                 self.conn.execute(sql)
-            except Exception:
-                pass  # Column already exists
+            except sqlite3.OperationalError:
+                pass  # Column already exists — expected on subsequent runs
 
     def execute(self, sql, params=()):
         return self.conn.execute(sql, params)

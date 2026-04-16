@@ -78,8 +78,8 @@ class SendMessageBackend(CommBackend):
         return (
             f'{self._python} {self._cli} msg send'
             f' --build {build_id} --sprint {sprint_id}'
-            f' --from orchestrator --type completion'
-            f' "agent completed: {log_path}"'
+            f' --from agent --to orchestrator --type update'
+            f' --body "agent completed: exit_code=$(cat {log_path}.exit 2>/dev/null || echo unknown)"'
         )
 
 

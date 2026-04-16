@@ -37,7 +37,7 @@ def _pid_is_alive(pid: int) -> bool:
             capture_output=True, text=True, timeout=5,
         )
         comm = result.stdout.strip().lower()
-        return any(name in comm for name in ("python", "claude", "node"))
+        return any(name in comm for name in ("python", "claude", "node", "bash", "codex", "gemini", "ollama"))
     except (subprocess.TimeoutExpired, OSError):
         return False
 
@@ -151,9 +151,9 @@ class TmuxBackend(SpawnBackend):
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"
+            f"trap 'kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null' EXIT\n"
             f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
             f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
-            f"kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null\n"
         )
 
         # Check if tmux session exists
@@ -223,9 +223,9 @@ class HeadlessBackend(SpawnBackend):
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"
+            f"trap 'kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null' EXIT\n"
             f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
             f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
-            f"kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null\n"
         )
 
         log_file = open(log_path, "w")

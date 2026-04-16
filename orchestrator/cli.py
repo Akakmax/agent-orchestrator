@@ -181,11 +181,13 @@ def _cmd_sprint_create_from_plan(db: OrchestratorDB, args):
     plan = json.loads(Path(args.plan).read_text())
     sprints = plan.get("sprints", [])
     for s in sprints:
+        depends_on = json.dumps(s.get("depends_on", []))
         sprint = db.create_sprint(
             build_id=args.build_id,
             sprint_number=s["number"],
             title=s["title"],
             description=s.get("description"),
+            depends_on=depends_on,
         )
         criteria = s.get("criteria")
         if criteria:

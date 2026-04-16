@@ -209,36 +209,51 @@ def _check_agent_health(
         return [{"action": "sprint_escalated", "sprint_id": sprint["id"],
                  "build_id": build["id"], "attempts": attempts}]
     else:
-        # Retry — increment attempts and respawn
+        # Retry — respawn the dead agent, only increment attempts on success
         if not dry_run:
             from .adapter import needs_session_lock  # noqa: PLC0415
-            db.increment_sprint_attempts(sprint["id"])
 
-            # Respawn the dead agent
             role = latest_log.get("agent", "generator")
-            if not (needs_session_lock(role) and is_session_locked()):
-                try:
-                    retry_ctx = f"Retry attempt {attempts + 1}/{max_attempts}. Previous agent died."
-                    if role == "generator":
-                        from .generator import get_generator_spawn_args  # noqa: PLC0415
-                        spawn_args = get_generator_spawn_args(
-                            db, build["id"], sprint["id"], retry_context=retry_ctx,
-                        )
-                    else:
-                        from .evaluator import get_evaluator_spawn_args  # noqa: PLC0415
-                        spawn_args = get_evaluator_spawn_args(
-                            db, build["id"], sprint["id"],
-                        )
-                    new_session_id = backend.spawn(**spawn_args)
-                    db.create_agent_log(
-                        build_id=build["id"],
-                        agent=role,
-                        sprint_id=sprint["id"],
-                        session_id=new_session_id,
-                        log_path=spawn_args["log_path"],
+            if needs_session_lock(role) and is_session_locked():
+                # Lock held — skip retry, don't burn an attempt
+                return [{"action": "session_locked",
+                         "sprint_id": sprint["id"],
+                         "build_id": build["id"],
+                         "role": role}]
+
+            try:
+                from .communication import get_comm_backend as _get_comm  # noqa: PLC0415
+                retry_ctx = f"Retry attempt {attempts + 1}/{max_attempts}. Previous agent died."
+                if role == "generator":
+                    from .generator import get_generator_spawn_args  # noqa: PLC0415
+                    spawn_args = get_generator_spawn_args(
+                        db, build["id"], sprint["id"], retry_context=retry_ctx,
                     )
-                except Exception:
-                    pass  # Spawn error — next tick will retry
+                else:
+                    from .evaluator import get_evaluator_spawn_args  # noqa: PLC0415
+                    spawn_args = get_evaluator_spawn_args(
+                        db, build["id"], sprint["id"],
+                    )
+                # Inject comm backend callback for respawned agent
+                comm_be = _get_comm(role)
+                cb_cmd = comm_be.build_callback_command(
+                    build["id"], sprint["id"], spawn_args["log_path"],
+                )
+                if cb_cmd:
+                    spawn_args["post_exit_command"] = cb_cmd
+
+                new_session_id = backend.spawn(**spawn_args)
+                db.create_agent_log(
+                    build_id=build["id"],
+                    agent=role,
+                    sprint_id=sprint["id"],
+                    session_id=new_session_id,
+                    log_path=spawn_args["log_path"],
+                )
+                # Only increment attempts after successful respawn
+                db.increment_sprint_attempts(sprint["id"])
+            except Exception:
+                pass  # Spawn error — next tick will retry without burning attempt
 
         return [{"action": "agent_crashed", "sprint_id": sprint["id"],
                  "build_id": build["id"],

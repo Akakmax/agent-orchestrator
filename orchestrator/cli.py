@@ -183,17 +183,21 @@ def _cmd_sprint_update(db: OrchestratorDB, args):
 
 def _cmd_sprint_create_from_plan(db: OrchestratorDB, args):
     plan = json.loads(Path(args.plan).read_text())
-    sprints = plan.get("sprints", [])
-    for s in sprints:
+    # Accept both {"sprints": [...]} and bare [...]
+    if isinstance(plan, list):
+        sprints = plan
+    else:
+        sprints = plan.get("sprints", [])
+    for i, s in enumerate(sprints, 1):
         depends_on = json.dumps(s.get("depends_on", []))
         sprint = db.create_sprint(
             build_id=args.build_id,
-            sprint_number=s["number"],
+            sprint_number=s.get("number", i),
             title=s["title"],
             description=s.get("description"),
             depends_on=depends_on,
         )
-        criteria = s.get("criteria")
+        criteria = s.get("criteria") or s.get("acceptance_criteria")
         if criteria:
             propose_contract(db, sprint["id"], criteria)
     db.update_build(args.build_id, total_sprints=len(sprints))

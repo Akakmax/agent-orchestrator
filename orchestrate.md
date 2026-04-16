@@ -174,7 +174,31 @@ Configuration: `OrchestratorConfig.SPAWN_BACKEND` = `"tmux"` or `"headless"`
 - **Planner/retrospective agents** — roles exist in config but are not auto-invoked by the tick loop. Use manually.
 - **HTTP/socket comm backends** — backends generate callback commands (side notifications) but do NOT drive tick progression. The tick loop always polls file-based `.exit` files for completion detection. Non-file backends are supplementary notifications only.
 - **`watch` requires tmux** — `orch watch <id>` attaches to a tmux session. If using headless backend, there is no interactive watch surface.
-- **Test suite** — basic test suite exists (`uv run --with pytest pytest tests/`), but coverage is limited to core logic (state machine, DB, contracts, tick). No integration tests for spawner or merge queue.
+- **Test suite** — basic test suite exists (`uv run --with pytest pytest tests/`), but coverage is limited to core logic (state machine, DB, contracts, tick, kanban bridge). No integration tests for spawner or merge queue.
+
+## Kanban Bridge
+
+The orchestrator optionally syncs with the kanban board (`~/.kanban/kanban.db`). If the kanban DB exists, build lifecycle events are mirrored as kanban issues.
+
+**Auto-sync** (happens on build state transitions):
+- Build created → kanban issue created (`orch-{build_id}`)
+- Build → building → kanban issue claimed by orchestrator
+- Build → done → kanban issue resolved
+- Build → failed → kanban issue escalated
+
+**CLI commands:**
+- `orch kanban status` — check if kanban bridge is available
+- `orch kanban link --build <id>` — manually create/link a kanban issue for a build
+- `orch kanban show --build <id>` — show the linked kanban issue
+
+**Programmatic API** (`orchestrator.kanban_bridge`):
+- `create_issue_for_build()` — create linked issue
+- `update_issue_status()` — sync build status → kanban status
+- `log_sprint_attempt()` — log sprint attempts in kanban audit trail
+- `escalate_build()` — log escalation in kanban escalation_log
+- `get_linked_issue()` — read linked issue
+
+All bridge operations are best-effort no-ops if kanban.db doesn't exist.
 
 ## Rules
 - **Never skip developer approval** on plans or major decisions

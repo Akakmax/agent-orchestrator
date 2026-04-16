@@ -136,6 +136,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_merge = sub.add_parser("merge-status", help="Show merge queue status")
     p_merge.add_argument("--build", required=True, dest="build_id")
 
+    # ── kanban ──────────────────────────────────────────────────
+    p_kanban = sub.add_parser("kanban", help="Kanban bridge operations")
+    kanban_sub = p_kanban.add_subparsers(dest="kanban_command")
+
+    p_kanban_link = kanban_sub.add_parser("link", help="Create kanban issue for a build")
+    p_kanban_link.add_argument("--build", required=True, dest="build_id")
+
+    p_kanban_show = kanban_sub.add_parser("show", help="Show kanban issue for a build")
+    p_kanban_show.add_argument("--build", required=True, dest="build_id")
+
+    p_kanban_status = kanban_sub.add_parser("status", help="Check kanban bridge availability")
+
     return parser
 
 
@@ -148,6 +160,13 @@ def _cmd_build(db: OrchestratorDB, args):
     build = db.create_build(args.prompt)
     print(f"BUILD-{build['id']} created (status: {build['status']})")
     _out(build)
+    # Auto-create kanban issue if kanban.db exists
+    from . import kanban_bridge  # noqa: PLC0415
+    if kanban_bridge.is_available():
+        issue_id = kanban_bridge.create_issue_for_build(
+            build["id"], build["prompt"])
+        if issue_id:
+            print(f"Kanban issue created: {issue_id}")
 
 
 def _cmd_status(db: OrchestratorDB, args):
@@ -397,6 +416,47 @@ def _cmd_merge_status(db: OrchestratorDB, args):
               f"[{m['status']}]{conflict_str}  sprint:{m['sprint_id'][:8]}")
 
 
+def _cmd_kanban(db: OrchestratorDB, args):
+    from . import kanban_bridge  # noqa: PLC0415
+
+    if args.kanban_command == "status":
+        if kanban_bridge.is_available():
+            print("Kanban bridge: AVAILABLE")
+            print(f"  DB path: {kanban_bridge.KANBAN_DB_PATH}")
+        else:
+            print("Kanban bridge: NOT AVAILABLE")
+            print(f"  Expected DB at: {kanban_bridge.KANBAN_DB_PATH}")
+
+    elif args.kanban_command == "link":
+        build = db.get_build(args.build_id)
+        if not build:
+            print(f"Build {args.build_id} not found", file=sys.stderr)
+            sys.exit(1)
+        if not kanban_bridge.is_available():
+            print("Kanban DB not found", file=sys.stderr)
+            sys.exit(1)
+        issue_id = kanban_bridge.create_issue_for_build(
+            build["id"], build["prompt"], build["total_sprints"])
+        if issue_id:
+            print(f"Kanban issue linked: {issue_id}")
+            # Sync current status
+            kanban_bridge.update_issue_status(build["id"], build["status"])
+        else:
+            print("Failed to create kanban issue", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.kanban_command == "show":
+        issue = kanban_bridge.get_linked_issue(args.build_id)
+        if issue:
+            _out(issue)
+        else:
+            print(f"No kanban issue linked to BUILD-{args.build_id}")
+
+    else:
+        print("Use: kanban link|show|status", file=sys.stderr)
+        sys.exit(1)
+
+
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -453,6 +513,8 @@ def main(argv=None):
             _cmd_watch(db, args)
         elif args.command == "merge-status":
             _cmd_merge_status(db, args)
+        elif args.command == "kanban":
+            _cmd_kanban(db, args)
     finally:
         db.close()
 

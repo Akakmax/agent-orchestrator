@@ -40,7 +40,16 @@ def transition_build(db: OrchestratorDB, build_id: str, new_status: str) -> dict
     if new_status in BuildStatus.TERMINAL:
         kwargs["completed_at"] = datetime.now(timezone.utc).isoformat()
 
-    return db.update_build(build_id, **kwargs)
+    result = db.update_build(build_id, **kwargs)
+
+    # Sync to kanban (no-op if kanban.db doesn't exist)
+    try:
+        from . import kanban_bridge  # noqa: PLC0415
+        kanban_bridge.update_issue_status(build_id, new_status)
+    except Exception:
+        pass  # Kanban sync is best-effort
+
+    return result
 
 
 def transition_sprint(db: OrchestratorDB, sprint_id: str, new_status: str) -> dict:

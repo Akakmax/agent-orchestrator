@@ -90,11 +90,30 @@ For complex builds, assign different agents to complementary roles:
 
 The contract negotiation between generator and evaluator IS the "both brains discuss" step. They agree on criteria before building starts, and the evaluator verifies independently after.
 
+## Merge Queue
+
+When multiple agents build in parallel, collisions are cheap, not prevented. The merge queue handles integration:
+
+1. Each agent pushes to their own branch (`sprint/{sprint_id}`)
+2. When a sprint finishes building, it transitions to `merging`
+3. The tick loop processes the merge queue serially:
+   - Attempts `git merge --no-ff`
+   - If conflicts: Haiku LLM resolves each hunk (2-3 sec per file)
+   - git rerere learns resolutions for future reuse
+   - Post-merge formatter (black/prettier) cleans up
+   - Targeted tests run on changed files only
+4. On success → `evaluating`. On failure → back to `building` (retry)
+
+Monitor: `orch merge-status --build <id>`
+
+This lets you run 10+ agents in parallel with ~2% collision rate.
+
 ## State Machine Quick Reference
 
 **Build:** `planning → building → reviewing → done` (any → `failed`)
-**Sprint:** `pending → contracted → building → evaluating → passed` (failed → escalated)
+**Sprint:** `pending → contracted → building → merging → evaluating → passed` (failed → escalated)
 **Contract:** `proposed → approved | rejected` (max 3 negotiation rounds)
+**Merge:** `pending → merging → resolved | failed`
 
 ## Rules
 - **Never skip developer approval** on plans or major decisions

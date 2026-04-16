@@ -154,6 +154,8 @@ class TmuxBackend(SpawnBackend):
         # Write command to a script file (REVIEW FIX m3: avoids quote breakage)
         script_path = f"{log_path}.sh"
         script_lines = (
+            f"# Enable git rerere for merge conflict learning\n"
+            f"git config rerere.enabled true 2>/dev/null\n"
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"
@@ -230,6 +232,8 @@ class HeadlessBackend(SpawnBackend):
         # Write script file like tmux backend
         script_path = f"{log_path}.sh"
         script_lines = (
+            f"# Enable git rerere for merge conflict learning\n"
+            f"git config rerere.enabled true 2>/dev/null\n"
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"

@@ -132,6 +132,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_watch = sub.add_parser("watch", help="Attach to build tmux session")
     p_watch.add_argument("build_id", help="Build ID to watch")
 
+    # ── merge-status ────────────────────────────────────────────
+    p_merge = sub.add_parser("merge-status", help="Show merge queue status")
+    p_merge.add_argument("--build", required=True, dest="build_id")
+
     return parser
 
 
@@ -334,6 +338,27 @@ def _cmd_watch(db: OrchestratorDB, args):
     os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
+def _cmd_merge_status(db: OrchestratorDB, args):
+    pending = db.get_pending_merges(args.build_id)
+    # Also get non-pending entries
+    all_entries = db.execute(
+        "SELECT * FROM merge_queue WHERE build_id = ? ORDER BY created_at",
+        (args.build_id,),
+    ).fetchall()
+
+    if not all_entries:
+        print(f"No merge queue entries for BUILD-{args.build_id}")
+        return
+
+    for m in all_entries:
+        m = dict(m)
+        status_icon = {"pending": "⏳", "merging": "🔄", "resolved": "✅", "failed": "❌"}.get(m["status"], "?")
+        conflicts = json.loads(m.get("conflict_files") or "[]")
+        conflict_str = f" ({len(conflicts)} conflicts)" if conflicts else ""
+        print(f"  {status_icon} {m['source_branch']} → {m['target_branch']}  "
+              f"[{m['status']}]{conflict_str}  sprint:{m['sprint_id'][:8]}")
+
+
 def main(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -388,6 +413,8 @@ def main(argv=None):
             _cmd_msgs(db, args)
         elif args.command == "watch":
             _cmd_watch(db, args)
+        elif args.command == "merge-status":
+            _cmd_merge_status(db, args)
     finally:
         db.close()
 

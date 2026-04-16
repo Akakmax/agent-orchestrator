@@ -89,6 +89,20 @@ CREATE TABLE IF NOT EXISTS retrospectives (
     approved_by TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS merge_queue (
+    id TEXT PRIMARY KEY,
+    build_id TEXT NOT NULL REFERENCES builds(id),
+    sprint_id TEXT NOT NULL REFERENCES sprints(id),
+    source_branch TEXT NOT NULL,
+    target_branch TEXT NOT NULL DEFAULT 'main',
+    status TEXT NOT NULL DEFAULT 'pending',
+    conflict_files TEXT DEFAULT '[]',
+    resolution_log TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
 """
 
 
@@ -365,3 +379,38 @@ class OrchestratorDB:
             "SELECT * FROM retrospectives WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
         return dict(row)
+
+    # ── Merge Queue ──────────────────────────────────────────────────
+
+    def create_merge_entry(self, build_id: str, sprint_id: str,
+                           source_branch: str, target_branch: str = "main") -> dict:
+        merge_id = _uuid()
+        now = _now()
+        self.conn.execute(
+            """INSERT INTO merge_queue (id, build_id, sprint_id, source_branch,
+               target_branch, status, conflict_files, attempts, created_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', '[]', 0, ?)""",
+            (merge_id, build_id, sprint_id, source_branch, target_branch, now),
+        )
+        self.conn.commit()
+        return self.get_merge_entry(merge_id)
+
+    def get_pending_merges(self, build_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM merge_queue WHERE build_id = ? AND status = 'pending' ORDER BY created_at",
+            (build_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_merge_entry(self, merge_id: str, **kwargs) -> dict:
+        set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+        values = list(kwargs.values()) + [merge_id]
+        self.conn.execute(f"UPDATE merge_queue SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return self.get_merge_entry(merge_id)
+
+    def get_merge_entry(self, merge_id: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM merge_queue WHERE id = ?", (merge_id,)
+        ).fetchone()
+        return dict(row) if row else None

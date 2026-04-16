@@ -63,6 +63,8 @@ This branch was created from base commit: `{base_commit}`
 
 DO NOT switch branches. DO NOT merge other branches. DO NOT rebase. Stay on your branch.
 
+When you finish, just push your branch. The orchestrator's merge queue will handle merging your work into the target branch, resolving any conflicts automatically. You do NOT need to merge yourself.
+
 ## Message Polling
 
 Before committing and before finishing, check for steering messages from the architects:

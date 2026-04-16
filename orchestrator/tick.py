@@ -41,10 +41,13 @@ def run_tick(db: OrchestratorDB, dry_run: bool = False) -> list[dict]:
             actions.extend(_check_agent_health(db, build, sprint, backend, dry_run))
             actions.extend(_check_heartbeat(db, build, sprint, dry_run))
 
-        # 3. Check sprint progression (spawn agents for ready sprints)
+        # 3. Process merge queue (MERGING sprints)
+        actions.extend(_process_merge_queue(db, build, sprints, dry_run))
+
+        # 4. Check sprint progression (spawn agents for ready sprints)
         actions.extend(_check_sprint_progression(db, build, sprints, backend, dry_run))
 
-        # 4. Check build completion
+        # 5. Check build completion
         actions.extend(_check_build_completion(db, build, dry_run))
 
     return actions
@@ -153,6 +156,130 @@ def _check_heartbeat(
             "build_id": build["id"],
             "elapsed_minutes": round(elapsed, 1),
         })
+
+    return actions
+
+
+def _process_merge_queue(
+    db: OrchestratorDB, build: dict, sprints: list[dict], dry_run: bool
+) -> list[dict]:
+    """Process sprints in MERGING state — run merge + targeted tests.
+
+    For each MERGING sprint:
+    1. Check if a merge_queue entry exists, create one if not
+    2. Run merge_branch() to merge the sprint branch into target
+    3. Run targeted tests on changed files
+    4. On success → transition to EVALUATING
+    5. On failure → transition back to BUILDING (retry) or FAILED
+    """
+    from .merger import merge_branch, run_post_merge_formatter  # noqa: PLC0415
+    from .test_runner import run_targeted_tests, map_files_to_tests  # noqa: PLC0415
+
+    actions = []
+    build_id = build["id"]
+    project_path = build.get("project_path")
+
+    if not project_path:
+        return actions  # No project path — can't merge
+
+    for sprint in sprints:
+        if sprint["status"] != SprintStatus.MERGING:
+            continue
+
+        sprint_id = sprint["id"]
+        source_branch = sprint.get("git_branch") or f"sprint/{sprint_id}"
+        target_branch = build.get("git_branch") or "main"
+
+        if dry_run:
+            actions.append({
+                "action": "merge_pending",
+                "build_id": build_id,
+                "sprint_id": sprint_id,
+                "source_branch": source_branch,
+            })
+            continue
+
+        # Ensure merge_queue entry exists
+        pending = db.get_pending_merges(build_id)
+        entry = next((m for m in pending if m["sprint_id"] == sprint_id), None)
+        if not entry:
+            entry = db.create_merge_entry(
+                build_id, sprint_id, source_branch, target_branch,
+            )
+
+        # Attempt the merge
+        db.update_merge_entry(entry["id"], status="merging")
+
+        try:
+            result = merge_branch(project_path, source_branch, target_branch)
+
+            if result.success:
+                # Run post-merge formatter
+                run_post_merge_formatter(project_path, result.conflict_files)
+
+                # Run targeted tests on changed files
+                changed = result.conflict_files  # At minimum, test conflict files
+                test_files = map_files_to_tests(changed, project_path)
+                test_result = run_targeted_tests(test_files, project_path)
+
+                if test_result.passed:
+                    db.update_merge_entry(
+                        entry["id"],
+                        status="resolved",
+                        resolution_log=result.resolution_log,
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    transition_sprint(db, sprint_id, SprintStatus.EVALUATING)
+                    actions.append({
+                        "action": "merge_resolved",
+                        "build_id": build_id,
+                        "sprint_id": sprint_id,
+                        "conflicts": len(result.conflict_files),
+                        "resolution_log": result.resolution_log,
+                    })
+                else:
+                    # Tests failed after merge — revert and retry
+                    db.update_merge_entry(
+                        entry["id"],
+                        status="failed",
+                        resolution_log=f"{result.resolution_log}\nTests failed: {test_result.output[:500]}",
+                    )
+                    transition_sprint(db, sprint_id, SprintStatus.BUILDING)
+                    actions.append({
+                        "action": "merge_tests_failed",
+                        "build_id": build_id,
+                        "sprint_id": sprint_id,
+                        "test_output": test_result.output[:200],
+                    })
+            else:
+                # Merge/resolution failed
+                db.update_merge_entry(
+                    entry["id"],
+                    status="failed",
+                    conflict_files=json.dumps(result.conflict_files),
+                    resolution_log=result.resolution_log,
+                )
+                transition_sprint(db, sprint_id, SprintStatus.BUILDING)
+                actions.append({
+                    "action": "merge_failed",
+                    "build_id": build_id,
+                    "sprint_id": sprint_id,
+                    "conflict_files": result.conflict_files,
+                    "resolution_log": result.resolution_log,
+                })
+
+        except Exception as e:
+            db.update_merge_entry(
+                entry["id"],
+                status="failed",
+                resolution_log=str(e),
+            )
+            actions.append({
+                "action": "merge_error",
+                "build_id": build_id,
+                "sprint_id": sprint_id,
+                "error": str(e),
+            })
 
     return actions
 

@@ -20,13 +20,22 @@ class SprintStatus:
     PENDING = "pending"
     CONTRACTED = "contracted"
     BUILDING = "building"
+    MERGING = "merging"
     EVALUATING = "evaluating"
     PASSED = "passed"
     FAILED = "failed"
     ESCALATED = "escalated"
     BLOCKED = "blocked"
-    ALL = (PENDING, CONTRACTED, BUILDING, EVALUATING, PASSED, FAILED, ESCALATED, BLOCKED)
+    ALL = (PENDING, CONTRACTED, BUILDING, MERGING, EVALUATING, PASSED, FAILED, ESCALATED, BLOCKED)
     TERMINAL = (PASSED, FAILED, ESCALATED)
+
+
+class MergeStatus:
+    PENDING = "pending"
+    MERGING = "merging"
+    RESOLVED = "resolved"
+    FAILED = "failed"
+    ALL = (PENDING, MERGING, RESOLVED, FAILED)
 
 
 class ContractStatus:
@@ -96,7 +105,8 @@ VALID_BUILD_TRANSITIONS = {
 VALID_SPRINT_TRANSITIONS = {
     SprintStatus.PENDING: (SprintStatus.CONTRACTED, SprintStatus.FAILED, SprintStatus.BLOCKED),
     SprintStatus.CONTRACTED: (SprintStatus.BUILDING, SprintStatus.FAILED),
-    SprintStatus.BUILDING: (SprintStatus.EVALUATING, SprintStatus.FAILED),
+    SprintStatus.BUILDING: (SprintStatus.MERGING, SprintStatus.EVALUATING, SprintStatus.FAILED),
+    SprintStatus.MERGING: (SprintStatus.EVALUATING, SprintStatus.BUILDING, SprintStatus.FAILED),
     SprintStatus.EVALUATING: (SprintStatus.PASSED, SprintStatus.BUILDING, SprintStatus.FAILED),
     SprintStatus.PASSED: (),
     SprintStatus.FAILED: (SprintStatus.ESCALATED,),

@@ -274,6 +274,8 @@ def _process_merge_queue(
                 status="failed",
                 resolution_log=str(e),
             )
+            # Transition sprint back to BUILDING for retry (or FAILED if exhausted)
+            transition_sprint(db, sprint_id, SprintStatus.BUILDING)
             actions.append({
                 "action": "merge_error",
                 "build_id": build_id,

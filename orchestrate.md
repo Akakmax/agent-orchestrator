@@ -135,14 +135,15 @@ The contract negotiation between generator and evaluator IS the "both brains dis
 When multiple agents build in parallel, collisions are cheap, not prevented. The merge queue handles integration:
 
 1. Each agent pushes to their own branch (`sprint/{sprint_id}`)
-2. When a sprint finishes building, transition to `merging` (or tick does it)
-3. The tick loop processes the merge queue serially:
+2. When a sprint finishes building, transition it to `merging` via CLI: `orch sprint update --id <id> --status merging` (the generator agent or PM does this — tick does NOT auto-transition to merging)
+3. The tick loop processes MERGING sprints serially:
    - Attempts `git merge --no-ff`
    - If conflicts: Haiku LLM resolves each hunk (only conflict + 20 lines context)
    - git rerere learns resolutions for future reuse
-   - Post-merge formatter (black/prettier) cleans up
-   - Targeted tests run on changed files only
-4. On success → `evaluating`. On failure → back to `building` (retry)
+   - Post-merge formatter (black/prettier) cleans up if available
+   - Targeted tests run on conflict files (maps to corresponding test files via heuristics)
+   - Note: clean merges with no conflict files currently run zero targeted tests
+4. On success → `evaluating`. On failure or exception → back to `building` (retry)
 
 Monitor: `orch merge-status --build <id>`
 
@@ -159,7 +160,8 @@ Notes:
 - `building → evaluating` is also valid (skipping merge for single-agent builds)
 - `evaluating → building` for retry when evaluation fails
 - `merging → building` for retry when merge fails
-- Terminal states (`done`/`failed`/`passed`/`escalated`) cannot transition further
+- Any non-terminal sprint status can transition directly to `failed` (timeout, crash, manual)
+- Terminal states (`done`/`failed`/`passed`/`escalated`) cannot transition further (except `failed → escalated`)
 
 ## Spawner
 

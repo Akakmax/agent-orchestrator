@@ -38,7 +38,7 @@ def _run(args: list[str], cwd: str,
 def _has_pytest(project_path: str) -> bool:
     """Check if pytest is importable in the project's Python environment."""
     result = _run(
-        ["python", "-m", "pytest", "--version"],
+        ["python3", "-m", "pytest", "--version"],
         cwd=project_path,
         timeout=10,
     )
@@ -109,12 +109,12 @@ def run_targeted_tests(test_files: list[str],
 
     if _has_pytest(project_path):
         result = _run(
-            ["python", "-m", "pytest"] + test_files + ["-v", "--tb=short"],
+            ["python3", "-m", "pytest"] + test_files + ["-v", "--tb=short"],
             cwd=project_path,
         )
     else:
         result = _run(
-            ["python", "-m", "unittest"] + test_files,
+            ["python3", "-m", "unittest"] + test_files,
             cwd=project_path,
         )
 
@@ -141,12 +141,12 @@ def run_full_test_suite(project_path: str) -> TestResult:
 
     if _has_pytest(project_path):
         result = _run(
-            ["python", "-m", "pytest", "-v", "--tb=short"],
+            ["python3", "-m", "pytest", "-v", "--tb=short"],
             cwd=project_path,
         )
     else:
         result = _run(
-            ["python", "-m", "unittest", "discover"],
+            ["python3", "-m", "unittest", "discover"],
             cwd=project_path,
         )
 

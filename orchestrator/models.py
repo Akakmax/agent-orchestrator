@@ -24,7 +24,8 @@ class SprintStatus:
     PASSED = "passed"
     FAILED = "failed"
     ESCALATED = "escalated"
-    ALL = (PENDING, CONTRACTED, BUILDING, EVALUATING, PASSED, FAILED, ESCALATED)
+    BLOCKED = "blocked"
+    ALL = (PENDING, CONTRACTED, BUILDING, EVALUATING, PASSED, FAILED, ESCALATED, BLOCKED)
     TERMINAL = (PASSED, FAILED, ESCALATED)
 
 
@@ -50,7 +51,8 @@ class MsgType:
     REJECTION = "rejection"
     CRITIQUE = "critique"
     QUESTION = "question"
-    ALL = (UPDATE, PROPOSAL, APPROVAL, REJECTION, CRITIQUE, QUESTION)
+    STEERING = "steering"
+    ALL = (UPDATE, PROPOSAL, APPROVAL, REJECTION, CRITIQUE, QUESTION, STEERING)
 
 
 class NegotiationPhase:
@@ -73,6 +75,12 @@ class OrchestratorConfig:
     BUSINESS_HOURS_END = 22
     DB_PATH = str(Path.home() / ".kanban" / "orchestrator.db")
     BUILDS_DIR = str(Path.home() / ".kanban" / "builds")
+    HEARTBEAT_INTERVAL_SECONDS = 300    # sidecar writes heartbeat every 5 min
+    HEARTBEAT_STALE_MINUTES = 8         # heartbeat older than this = suspect
+    LOG_STALE_MINUTES = 15              # log unchanged this long = possibly stuck
+    CHECKPOINT_STALE_MINUTES = 45       # no checkpoint this long = stalled
+    SPRINT_TIMEOUT_MINUTES = 60         # default per-sprint timeout
+    MERGE_STRATEGY = "sequential"       # sequential merge, respawn on conflict
 
 
 # ── State transitions ────────────────────────────────────────────────
@@ -86,11 +94,12 @@ VALID_BUILD_TRANSITIONS = {
 }
 
 VALID_SPRINT_TRANSITIONS = {
-    SprintStatus.PENDING: (SprintStatus.CONTRACTED, SprintStatus.FAILED),
+    SprintStatus.PENDING: (SprintStatus.CONTRACTED, SprintStatus.FAILED, SprintStatus.BLOCKED),
     SprintStatus.CONTRACTED: (SprintStatus.BUILDING, SprintStatus.FAILED),
     SprintStatus.BUILDING: (SprintStatus.EVALUATING, SprintStatus.FAILED),
     SprintStatus.EVALUATING: (SprintStatus.PASSED, SprintStatus.BUILDING, SprintStatus.FAILED),
     SprintStatus.PASSED: (),
     SprintStatus.FAILED: (SprintStatus.ESCALATED,),
     SprintStatus.ESCALATED: (),
+    SprintStatus.BLOCKED: (SprintStatus.CONTRACTED, SprintStatus.FAILED),
 }

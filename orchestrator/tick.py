@@ -4,7 +4,9 @@ Main entry point for the orchestrator's periodic health check.
 Processes all active builds: checks timeouts, agent health,
 sprint progression, and build completion.
 """
+import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 from .db import OrchestratorDB
 from .models import BuildStatus, SprintStatus, OrchestratorConfig
@@ -37,6 +39,7 @@ def run_tick(db: OrchestratorDB, dry_run: bool = False) -> list[dict]:
         for sprint in sprints:
             actions.extend(_check_contract_timeout(db, sprint, dry_run))
             actions.extend(_check_agent_health(db, build, sprint, backend, dry_run))
+            actions.extend(_check_heartbeat(db, build, sprint, dry_run))
 
         # 3. Check sprint progression
         actions.extend(_check_sprint_progression(db, build, sprints, dry_run))
@@ -86,6 +89,87 @@ def _check_contract_timeout(
              "elapsed_minutes": round(elapsed_minutes, 2)}]
 
 
+def _check_heartbeat(
+    db: OrchestratorDB, build: dict, sprint: dict, dry_run: bool
+) -> list[dict]:
+    """Check heartbeat freshness and log growth for active sprints."""
+    if sprint["status"] not in (SprintStatus.BUILDING, SprintStatus.EVALUATING):
+        return []
+
+    logs = db.get_agent_logs(build["id"], sprint_id=sprint["id"])
+    if not logs:
+        return []
+
+    latest_log = logs[-1]
+    log_path = latest_log.get("log_path")
+    if not log_path:
+        return []
+
+    actions = []
+    now = datetime.now(timezone.utc)
+
+    # 1. Heartbeat file freshness (written by shell sidecar)
+    hb_path = Path(f"{log_path}.heartbeat")
+    if hb_path.exists():
+        try:
+            hb_time = datetime.fromisoformat(hb_path.read_text().strip())
+            age_min = (now - hb_time).total_seconds() / 60
+            if age_min > OrchestratorConfig.HEARTBEAT_STALE_MINUTES:
+                actions.append({
+                    "action": "heartbeat_stale",
+                    "sprint_id": sprint["id"],
+                    "build_id": build["id"],
+                    "age_minutes": round(age_min, 1),
+                })
+        except (ValueError, OSError):
+            pass
+
+    # 2. Log file growth — if log hasn't grown, agent may be stuck
+    lp = Path(log_path)
+    if lp.exists():
+        mtime = datetime.fromtimestamp(lp.stat().st_mtime, tz=timezone.utc)
+        age_min = (now - mtime).total_seconds() / 60
+        if age_min > OrchestratorConfig.LOG_STALE_MINUTES:
+            actions.append({
+                "action": "log_stale",
+                "sprint_id": sprint["id"],
+                "build_id": build["id"],
+                "age_minutes": round(age_min, 1),
+            })
+
+    # 3. Sprint-level timeout
+    started = datetime.fromisoformat(sprint["updated_at"])
+    timeout = sprint.get("timeout_minutes") or OrchestratorConfig.SPRINT_TIMEOUT_MINUTES
+    elapsed = (now - started).total_seconds() / 60
+    if elapsed > timeout:
+        if not dry_run:
+            transition_sprint(db, sprint["id"], SprintStatus.FAILED)
+        actions.append({
+            "action": "sprint_timeout",
+            "sprint_id": sprint["id"],
+            "build_id": build["id"],
+            "elapsed_minutes": round(elapsed, 1),
+        })
+
+    return actions
+
+
+def _get_ready_sprints(sprints: list[dict]) -> list[dict]:
+    """Return sprints whose dependencies are all PASSED and status is CONTRACTED.
+
+    This enables parallel execution — all independent sprints spawn at once.
+    """
+    passed_ids = {s["id"] for s in sprints if s["status"] == SprintStatus.PASSED}
+    ready = []
+    for s in sprints:
+        if s["status"] != SprintStatus.CONTRACTED:
+            continue
+        deps = json.loads(s.get("depends_on") or "[]")
+        if all(dep_id in passed_ids for dep_id in deps):
+            ready.append(s)
+    return ready
+
+
 def _check_agent_health(
     db: OrchestratorDB, build: dict, sprint: dict,
     backend, dry_run: bool
@@ -133,25 +217,21 @@ def _check_agent_health(
 def _check_sprint_progression(
     db: OrchestratorDB, build: dict, sprints: list[dict], dry_run: bool
 ) -> list[dict]:
-    """Advance to next sprint if current sprint has passed."""
+    """Advance ready sprints — DAG-aware parallel progression."""
     actions = []
-    current = build["current_sprint"]
-    total = build["total_sprints"]
+    ready = _get_ready_sprints(sprints)
 
-    for sprint in sprints:
-        if (sprint["status"] == SprintStatus.PASSED
-                and sprint["sprint_number"] == current
-                and current < total):
-            next_num = current + 1
-            if not dry_run:
-                db.update_build(build["id"], current_sprint=next_num)
-            actions.append({
-                "action": "advance_sprint",
-                "build_id": build["id"],
-                "sprint_number": next_num,
-            })
-            # Update current so we don't double-advance in this tick
-            current = next_num
+    for sprint in ready:
+        if not dry_run:
+            # Mark as ready for spawning (status stays CONTRACTED,
+            # the spawner picks it up on the next tick)
+            pass  # Sprint is already CONTRACTED — spawner will handle it
+        actions.append({
+            "action": "sprint_ready",
+            "build_id": build["id"],
+            "sprint_id": sprint["id"],
+            "sprint_number": sprint["sprint_number"],
+        })
 
     return actions
 
@@ -168,11 +248,8 @@ def _check_build_completion(
         return []
 
     all_passed = all(s["status"] == SprintStatus.PASSED for s in sprints)
-    # Re-read build in case current_sprint was updated by progression check
-    current_build = db.get_build(build["id"])
-    at_end = current_build["current_sprint"] >= current_build["total_sprints"]
 
-    if all_passed and at_end:
+    if all_passed:
         if not dry_run:
             transition_build(db, build["id"], BuildStatus.REVIEWING)
         return [{"action": "build_to_review", "build_id": build["id"]}]

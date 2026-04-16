@@ -148,8 +148,12 @@ class TmuxBackend(SpawnBackend):
         # Write command to a script file (REVIEW FIX m3: avoids quote breakage)
         script_path = f"{log_path}.sh"
         Path(script_path).write_text(
-            f"set -o pipefail; {command} 2>&1 | tee {log_path}; "
-            f"echo $? > {log_path}.exit\n"
+            f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
+            f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
+            f"HB_PID=$!\n"
+            f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
+            f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
+            f"kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null\n"
         )
 
         # Check if tmux session exists
@@ -216,8 +220,12 @@ class HeadlessBackend(SpawnBackend):
         # Write script file like tmux backend
         script_path = f"{log_path}.sh"
         Path(script_path).write_text(
-            f"set -o pipefail; {command} 2>&1 | tee {log_path}; "
-            f"echo $? > {log_path}.exit\n"
+            f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
+            f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
+            f"HB_PID=$!\n"
+            f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
+            f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
+            f"kill $HB_PID 2>/dev/null; wait $HB_PID 2>/dev/null\n"
         )
 
         log_file = open(log_path, "w")

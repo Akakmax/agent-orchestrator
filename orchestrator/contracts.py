@@ -4,6 +4,8 @@ Handles proposal/review cycles between generator and evaluator agents.
 Each sprint goes through at most CONTRACT_MAX_ROUNDS of negotiation
 before raising NegotiationExhaustedError.
 """
+import json
+
 from .db import OrchestratorDB
 from .models import (
     AgentRole,
@@ -36,6 +38,20 @@ def propose_contract(
             f"Sprint {sprint_id} exceeded max negotiation rounds "
             f"({OrchestratorConfig.CONTRACT_MAX_ROUNDS})"
         )
+
+    # Sync file boundaries and timeout to sprint row for tick-loop access
+    update_kwargs = {}
+    if isinstance(criteria, dict):
+        if "allowed_paths" in criteria:
+            update_kwargs["allowed_paths"] = json.dumps(criteria["allowed_paths"])
+        if "allowed_new_paths" in criteria:
+            update_kwargs["allowed_new_paths"] = json.dumps(criteria["allowed_new_paths"])
+        if "timeout_minutes" in criteria:
+            update_kwargs["timeout_minutes"] = criteria["timeout_minutes"]
+        if "checkpoint_interval_minutes" in criteria:
+            update_kwargs["checkpoint_interval_minutes"] = criteria["checkpoint_interval_minutes"]
+    if update_kwargs:
+        db.update_sprint(sprint_id, **update_kwargs)
 
     contract = db.create_contract(sprint_id, proposed_by, criteria)
     db.update_sprint(sprint_id, negotiation_phase=NegotiationPhase.EVALUATOR_REVIEWING)

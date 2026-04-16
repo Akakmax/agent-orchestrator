@@ -61,9 +61,12 @@ def build_generator_command(
     project_path = build.get("project_path") or f"{builds_dir}/{build_id}/project"
     git_branch = build.get("git_branch") or f"build/{build_id}"
 
+    sprint_num = sprint["sprint_number"]
+    log_path = str(Path(OrchestratorConfig.LOG_DIR) / f"build-{build_id}-sprint{sprint_num}-generator.log")
+
     return template.format(
         build_id=build_id,
-        sprint_number=sprint["sprint_number"],
+        sprint_number=sprint_num,
         sprint_title=sprint["title"],
         contract_criteria=contract_criteria,
         builds_dir=builds_dir,
@@ -73,6 +76,12 @@ def build_generator_command(
         python=_find_python(),
         cli=_cli_path(),
         retry_context=retry_context,
+        allowed_paths=contract_criteria,
+        allowed_new_paths="(see contract criteria)",
+        checkpoint_interval=sprint.get("checkpoint_interval_minutes", 10),
+        sprint_branch=sprint.get("git_branch", f"sprint/{sprint_id}"),
+        base_commit=sprint.get("base_commit", "main"),
+        log_path=log_path,
     )
 
 

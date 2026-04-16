@@ -31,3 +31,32 @@ When done evaluating:
   If ALL criteria pass: {python} {cli} sprint update --id {sprint_id} --status passed
   If ANY criterion fails: {python} {cli} sprint update --id {sprint_id} --status failed
   {python} {cli} log --build {build_id} --sprint {sprint_id} --agent evaluator --summary "..."
+
+## File Boundary Verification (MANDATORY)
+
+The generator was contracted to ONLY modify files within these paths:
+{allowed_paths}
+
+And create new files ONLY within:
+{allowed_new_paths}
+
+Run this check FIRST, before any other evaluation:
+```bash
+git diff --name-only {base_commit}..HEAD
+```
+
+Compare every changed file against the allowed paths. If ANY file outside the boundaries was modified, FAIL the sprint immediately with:
+```bash
+{python} {cli} msg send --build {build_id} --sprint {sprint_id} --from evaluator --type rejection --body "FAIL: file boundary violation — <list of violating files>"
+```
+
+No exceptions. File boundary violations are automatic failures regardless of code quality.
+
+## Structured Checkpoint Review
+
+Check the generator's progress file for signs of drift:
+```bash
+cat {log_path}.progress 2>/dev/null
+```
+
+Verify that checkpoints show incremental progress with real git commits, not just repeated "working on it" messages.

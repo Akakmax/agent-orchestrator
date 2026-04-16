@@ -108,7 +108,25 @@ class OrchestratorDB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA_SQL)
+        self._migrate_v2()
         self.conn.commit()
+
+    def _migrate_v2(self):
+        """Add parallel execution columns. Safe to run repeatedly."""
+        migrations = [
+            "ALTER TABLE sprints ADD COLUMN depends_on TEXT DEFAULT '[]'",
+            "ALTER TABLE sprints ADD COLUMN git_branch TEXT",
+            "ALTER TABLE sprints ADD COLUMN allowed_paths TEXT DEFAULT '[]'",
+            "ALTER TABLE sprints ADD COLUMN allowed_new_paths TEXT DEFAULT '[]'",
+            "ALTER TABLE sprints ADD COLUMN timeout_minutes INTEGER DEFAULT 60",
+            "ALTER TABLE sprints ADD COLUMN checkpoint_interval_minutes INTEGER DEFAULT 10",
+            "ALTER TABLE sprints ADD COLUMN base_commit TEXT",
+        ]
+        for sql in migrations:
+            try:
+                self.conn.execute(sql)
+            except Exception:
+                pass  # Column already exists
 
     def execute(self, sql, params=()):
         return self.conn.execute(sql, params)
@@ -165,15 +183,16 @@ class OrchestratorDB:
     # ── Sprints ──────────────────────────────────────────────────────
 
     def create_sprint(self, build_id: str, sprint_number: int, title: str,
-                      description: Optional[str] = None) -> dict:
+                      description: Optional[str] = None,
+                      depends_on: str = "[]") -> dict:
         sprint_id = _uuid()
         now = _now()
         self.conn.execute(
             """INSERT INTO sprints (id, build_id, sprint_number, title, description,
-               status, attempts, max_attempts, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)""",
+               status, attempts, max_attempts, depends_on, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)""",
             (sprint_id, build_id, sprint_number, title, description,
-             OrchestratorConfig.SPRINT_MAX_ATTEMPTS, now, now),
+             OrchestratorConfig.SPRINT_MAX_ATTEMPTS, depends_on, now, now),
         )
         self.conn.commit()
         return self.get_sprint(sprint_id)

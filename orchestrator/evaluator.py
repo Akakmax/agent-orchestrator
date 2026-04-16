@@ -57,15 +57,22 @@ def build_evaluator_command(
     template = (_PROMPTS_DIR / "evaluator.md").read_text()
     builds_dir = OrchestratorConfig.BUILDS_DIR
 
+    sprint_num = sprint["sprint_number"]
+    log_path = str(Path(OrchestratorConfig.LOG_DIR) / f"build-{build_id}-sprint{sprint_num}-evaluator.log")
+
     return template.format(
         build_id=build_id,
-        sprint_number=sprint["sprint_number"],
+        sprint_number=sprint_num,
         sprint_title=sprint["title"],
         contract_criteria=contract_criteria,
         builds_dir=builds_dir,
         sprint_id=sprint_id,
         python=_find_python(),
         cli=_cli_path(),
+        allowed_paths=contract_criteria,
+        allowed_new_paths="(see contract criteria)",
+        base_commit=sprint.get("base_commit", "main"),
+        log_path=log_path,
     )
 
 

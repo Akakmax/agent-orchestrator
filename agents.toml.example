@@ -1,0 +1,63 @@
+# Universal Agent Orchestrator — Agent Profiles
+# Each agent defines its CLI invocation pattern and communication protocol.
+# Roles map orchestrator functions to specific agents.
+
+[agents.claude-code]
+cli = "claude"
+prompt_style = "flag"           # flag | subcommand | stdin
+prompt_flag = "-p"
+extra_args = ["--model", "sonnet", "--output-format", "json", "--allowedTools", "Bash,Read,Edit,Write,Glob,Grep"]
+session_resumable = true
+resume_flag = "--resume"
+session_lock = true             # needs exclusive CC session lock
+
+  [agents.claude-code.communication]
+  protocol = "sendmessage"
+  callback_in_prompt = true     # inject CLI callback into agent's prompt
+
+[agents.codex]
+cli = "codex"
+prompt_style = "subcommand"
+prompt_flag = "exec"
+extra_args = ["--ephemeral"]
+session_resumable = false
+session_lock = false
+
+  [agents.codex.communication]
+  protocol = "file"
+  watch_method = "fswatch"
+  poll_interval = 5
+
+[agents.gemini]
+cli = "gemini"
+prompt_style = "stdin"          # cat prompt.txt | gemini
+prompt_flag = ""
+extra_args = []
+session_resumable = false
+session_lock = false
+
+  [agents.gemini.communication]
+  protocol = "file"
+  watch_method = "fswatch"
+  poll_interval = 5
+
+[agents.ollama]
+cli = "ollama"
+prompt_style = "subcommand"
+prompt_flag = "run"
+extra_args = ["gemma4:27b"]           # model name goes in extra_args (inserted between subcommand and prompt)
+session_resumable = false
+session_lock = false
+
+  [agents.ollama.communication]
+  protocol = "file"
+  watch_method = "poll"
+  poll_interval = 3
+
+# Role → Agent mapping
+# Change these to swap which agent handles each orchestrator role
+[roles]
+planner = "claude-code"
+generator = "claude-code"
+evaluator = "codex"
+retrospective = "gemini"

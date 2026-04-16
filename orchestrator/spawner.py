@@ -114,8 +114,13 @@ class SpawnBackend(ABC):
 
     @abstractmethod
     def spawn(self, session_name: str, window_name: str,
-              command: str, log_path: str) -> str:
-        """Spawn a command. Returns a session_id string."""
+              command: str, log_path: str,
+              post_exit_command: str = "") -> str:
+        """Spawn a command. Returns a session_id string.
+
+        post_exit_command: optional shell command appended after exit code
+        is written (used by comm backends for completion callbacks).
+        """
 
     @abstractmethod
     def is_alive(self, session_id: str, log_path: str = None) -> bool:
@@ -142,12 +147,13 @@ class TmuxBackend(SpawnBackend):
     """Spawn commands in tmux sessions with log capture."""
 
     def spawn(self, session_name: str, window_name: str,
-              command: str, log_path: str) -> str:
+              command: str, log_path: str,
+              post_exit_command: str = "") -> str:
         session_id = f"{session_name}:{window_name}"
 
         # Write command to a script file (REVIEW FIX m3: avoids quote breakage)
         script_path = f"{log_path}.sh"
-        Path(script_path).write_text(
+        script_lines = (
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"
@@ -155,6 +161,9 @@ class TmuxBackend(SpawnBackend):
             f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
             f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
         )
+        if post_exit_command:
+            script_lines += f"{post_exit_command}\n"
+        Path(script_path).write_text(script_lines)
 
         # Check if tmux session exists
         result = subprocess.run(
@@ -216,10 +225,11 @@ class HeadlessBackend(SpawnBackend):
     """Spawn commands as background processes."""
 
     def spawn(self, session_name: str, window_name: str,
-              command: str, log_path: str) -> str:
+              command: str, log_path: str,
+              post_exit_command: str = "") -> str:
         # Write script file like tmux backend
         script_path = f"{log_path}.sh"
-        Path(script_path).write_text(
+        script_lines = (
             f"# Heartbeat sidecar — writes timestamp every 5 min while alive\n"
             f"(while true; do date -u +%FT%TZ > {log_path}.heartbeat; sleep 300; done) &\n"
             f"HB_PID=$!\n"
@@ -227,6 +237,9 @@ class HeadlessBackend(SpawnBackend):
             f"set -o pipefail; {command} 2>&1 | tee {log_path}\n"
             f"EXIT_CODE=$?; echo $EXIT_CODE > {log_path}.exit\n"
         )
+        if post_exit_command:
+            script_lines += f"{post_exit_command}\n"
+        Path(script_path).write_text(script_lines)
 
         log_file = open(log_path, "w")
         proc = subprocess.Popen(

@@ -47,9 +47,15 @@ def propose_contract(
         if "allowed_new_paths" in criteria:
             update_kwargs["allowed_new_paths"] = json.dumps(criteria["allowed_new_paths"])
         if "timeout_minutes" in criteria:
-            update_kwargs["timeout_minutes"] = criteria["timeout_minutes"]
+            try:
+                update_kwargs["timeout_minutes"] = int(criteria["timeout_minutes"])
+            except (ValueError, TypeError):
+                pass  # Skip invalid value — default will be used
         if "checkpoint_interval_minutes" in criteria:
-            update_kwargs["checkpoint_interval_minutes"] = criteria["checkpoint_interval_minutes"]
+            try:
+                update_kwargs["checkpoint_interval_minutes"] = int(criteria["checkpoint_interval_minutes"])
+            except (ValueError, TypeError):
+                pass
     if update_kwargs:
         db.update_sprint(sprint_id, **update_kwargs)
 

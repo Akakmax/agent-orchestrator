@@ -102,9 +102,13 @@ class HttpBackend(CommBackend):
         log_path: str,
     ) -> str:
         """Return a curl POST command sent after the agent exits."""
-        url = f"http://localhost:{self._port}" + self._url_tmpl.format(
-            sprint_id=sprint_id,
-        )
+        try:
+            url = f"http://localhost:{self._port}" + self._url_tmpl.format(
+                sprint_id=sprint_id,
+            )
+        except KeyError:
+            # Malformed callback_url template — fall back to default
+            url = f"http://localhost:{self._port}/callback/{sprint_id}"
         payload = (
             f'{{"build_id":"{build_id}",'
             f'"sprint_id":"{sprint_id}",'

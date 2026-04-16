@@ -139,7 +139,10 @@ def _check_heartbeat(
 
     # 3. Sprint-level timeout
     started = datetime.fromisoformat(sprint["updated_at"])
-    timeout = sprint.get("timeout_minutes") or OrchestratorConfig.SPRINT_TIMEOUT_MINUTES
+    try:
+        timeout = int(sprint.get("timeout_minutes") or OrchestratorConfig.SPRINT_TIMEOUT_MINUTES)
+    except (ValueError, TypeError):
+        timeout = OrchestratorConfig.SPRINT_TIMEOUT_MINUTES
     elapsed = (now - started).total_seconds() / 60
     if elapsed > timeout:
         if not dry_run:
@@ -206,9 +209,37 @@ def _check_agent_health(
         return [{"action": "sprint_escalated", "sprint_id": sprint["id"],
                  "build_id": build["id"], "attempts": attempts}]
     else:
-        # Retry — increment attempts
+        # Retry — increment attempts and respawn
         if not dry_run:
+            from .adapter import needs_session_lock  # noqa: PLC0415
             db.increment_sprint_attempts(sprint["id"])
+
+            # Respawn the dead agent
+            role = latest_log.get("agent", "generator")
+            if not (needs_session_lock(role) and is_session_locked()):
+                try:
+                    retry_ctx = f"Retry attempt {attempts + 1}/{max_attempts}. Previous agent died."
+                    if role == "generator":
+                        from .generator import get_generator_spawn_args  # noqa: PLC0415
+                        spawn_args = get_generator_spawn_args(
+                            db, build["id"], sprint["id"], retry_context=retry_ctx,
+                        )
+                    else:
+                        from .evaluator import get_evaluator_spawn_args  # noqa: PLC0415
+                        spawn_args = get_evaluator_spawn_args(
+                            db, build["id"], sprint["id"],
+                        )
+                    new_session_id = backend.spawn(**spawn_args)
+                    db.create_agent_log(
+                        build_id=build["id"],
+                        agent=role,
+                        sprint_id=sprint["id"],
+                        session_id=new_session_id,
+                        log_path=spawn_args["log_path"],
+                    )
+                except Exception:
+                    pass  # Spawn error — next tick will retry
+
         return [{"action": "agent_crashed", "sprint_id": sprint["id"],
                  "build_id": build["id"],
                  "attempt": attempts + 1}]
@@ -227,6 +258,7 @@ def _check_sprint_progression(
     from .generator import get_generator_spawn_args  # noqa: PLC0415
     from .evaluator import get_evaluator_spawn_args  # noqa: PLC0415
     from .adapter import needs_session_lock  # noqa: PLC0415
+    from .communication import get_comm_backend  # noqa: PLC0415
 
     actions = []
     build_id = build["id"]
@@ -255,6 +287,13 @@ def _check_sprint_progression(
 
         try:
             spawn_args = get_generator_spawn_args(db, build_id, sprint["id"])
+
+            # Inject comm backend callback (sendmessage, http, unix_socket)
+            comm = get_comm_backend("generator")
+            cb_cmd = comm.build_callback_command(build_id, sprint["id"], spawn_args["log_path"])
+            if cb_cmd:
+                spawn_args["post_exit_command"] = cb_cmd
+
             session_id = backend.spawn(**spawn_args)
 
             # Record agent log so health checks can find it
@@ -314,6 +353,13 @@ def _check_sprint_progression(
 
         try:
             spawn_args = get_evaluator_spawn_args(db, build_id, sprint["id"])
+
+            # Inject comm backend callback
+            comm = get_comm_backend("evaluator")
+            cb_cmd = comm.build_callback_command(build_id, sprint["id"], spawn_args["log_path"])
+            if cb_cmd:
+                spawn_args["post_exit_command"] = cb_cmd
+
             session_id = backend.spawn(**spawn_args)
 
             db.create_agent_log(

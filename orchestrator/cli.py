@@ -188,18 +188,52 @@ def _cmd_sprint_create_from_plan(db: OrchestratorDB, args):
         sprints = plan
     else:
         sprints = plan.get("sprints", [])
+
+    if not sprints:
+        print("No sprints in plan", file=sys.stderr)
+        sys.exit(1)
+
+    # Two-pass import: create all sprints first, then resolve depends_on
+    # Sprint plans use sprint numbers (1, 2, 3) in depends_on, but the DB
+    # uses sprint IDs. We build a number→ID map to translate.
+    num_to_id: dict[int, str] = {}
+    created: list[tuple[dict, dict]] = []  # (plan_entry, db_sprint)
+
+    # Pass 1: create sprints (no deps yet)
     for i, s in enumerate(sprints, 1):
-        depends_on = json.dumps(s.get("depends_on", []))
+        if "title" not in s:
+            print(f"Sprint {i} missing required 'title' field", file=sys.stderr)
+            sys.exit(1)
+        sprint_num = s.get("number", i)
         sprint = db.create_sprint(
             build_id=args.build_id,
-            sprint_number=s.get("number", i),
+            sprint_number=sprint_num,
             title=s["title"],
             description=s.get("description"),
-            depends_on=depends_on,
         )
+        num_to_id[sprint_num] = sprint["id"]
+        created.append((s, sprint))
+
+    # Pass 2: resolve depends_on (numbers → IDs) and set contracts
+    for s, sprint in created:
+        raw_deps = s.get("depends_on", [])
+        resolved_deps = []
+        for dep in raw_deps:
+            if isinstance(dep, int) and dep in num_to_id:
+                resolved_deps.append(num_to_id[dep])
+            elif isinstance(dep, str):
+                resolved_deps.append(dep)  # Already an ID
+            else:
+                print(f"Warning: sprint {sprint['sprint_number']} has "
+                      f"unresolvable dependency: {dep}", file=sys.stderr)
+        if resolved_deps:
+            db.update_sprint(sprint["id"],
+                             depends_on=json.dumps(resolved_deps))
+
         criteria = s.get("criteria") or s.get("acceptance_criteria")
         if criteria:
             propose_contract(db, sprint["id"], criteria)
+
     db.update_build(args.build_id, total_sprints=len(sprints))
     print(f"Created {len(sprints)} sprints for BUILD-{args.build_id}")
 

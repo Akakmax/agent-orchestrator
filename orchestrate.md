@@ -172,8 +172,9 @@ Configuration: `OrchestratorConfig.SPAWN_BACKEND` = `"tmux"` or `"headless"`
 
 - **No workspace isolation** — parallel agents share the same project directory. Use single-agent or sequential sprints for now.
 - **Planner/retrospective agents** — roles exist in config but are not auto-invoked by the tick loop. Use manually.
-- **HTTP/socket comm listeners** — backends can generate callback commands but no built-in listener server. The tick loop polls file-based completion.
-- **No built-in test suite** — the orchestrator itself has no automated tests yet.
+- **HTTP/socket comm backends** — backends generate callback commands (side notifications) but do NOT drive tick progression. The tick loop always polls file-based `.exit` files for completion detection. Non-file backends are supplementary notifications only.
+- **`watch` requires tmux** — `orch watch <id>` attaches to a tmux session. If using headless backend, there is no interactive watch surface.
+- **Test suite** — basic test suite exists (`uv run --with pytest pytest tests/`), but coverage is limited to core logic (state machine, DB, contracts, tick). No integration tests for spawner or merge queue.
 
 ## Rules
 - **Never skip developer approval** on plans or major decisions

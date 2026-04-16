@@ -150,12 +150,16 @@ Monitor: `orch merge-status --build <id>`
 
 ## State Machine Quick Reference
 
-**Build:** `planning → building → reviewing → done` (any → `failed`)
-**Sprint:** `pending → contracted → building → merging → evaluating → passed` (failed → escalated)
+**Build:** `planning → building → reviewing → done` (non-terminal → `failed`; `reviewing → building` for rework)
+**Sprint:** `pending → contracted → building → merging → evaluating → passed` (failed → escalated; `blocked → contracted`)
 **Contract:** `proposed → approved | rejected` (max 3 negotiation rounds)
 **Merge:** `pending → merging → resolved | failed`
 
-Note: `building → evaluating` is also valid (skipping merge for single-agent builds).
+Notes:
+- `building → evaluating` is also valid (skipping merge for single-agent builds)
+- `evaluating → building` for retry when evaluation fails
+- `merging → building` for retry when merge fails
+- Terminal states (`done`/`failed`/`passed`/`escalated`) cannot transition further
 
 ## Spawner
 

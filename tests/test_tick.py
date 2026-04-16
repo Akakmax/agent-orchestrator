@@ -5,6 +5,7 @@ so no actual tmux/processes are created.
 """
 import json
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,9 @@ from orchestrator.tick import (
     run_tick,
     _check_build_timeout,
     _check_build_completion,
+    _check_contract_timeout,
+    _check_heartbeat,
+    _check_agent_health,
     _get_ready_sprints,
 )
 
@@ -195,3 +199,127 @@ class TestTickIntegration:
         actions = run_tick(db, dry_run=False)
         # No sprints = no actions (except possibly build completion check)
         assert all(a["action"] != "sprint_ready" for a in actions)
+
+
+class TestContractTimeout:
+    def test_no_negotiation_phase_no_timeout(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        sprint = db.get_sprint(s["id"])
+        actions = _check_contract_timeout(db, sprint, dry_run=False)
+        assert len(actions) == 0
+
+    def test_active_negotiation_not_timed_out(self, db):
+        b = db.create_build("Test")
+        s = db.create_sprint(b["id"], 1, "Sprint 1")
+        # Set negotiation phase (propose creates it)
+        propose_contract(db, s["id"], {"tests": ["pass"]})
+        sprint = db.get_sprint(s["id"])
+        actions = _check_contract_timeout(db, sprint, dry_run=False)
+        assert len(actions) == 0  # Just created, not timed out
+
+    def test_stale_negotiation_times_out(self, db):
+        b = db.create_build("Test")
+        s = db.create_sprint(b["id"], 1, "Sprint 1")
+        propose_contract(db, s["id"], {"tests": ["pass"]})
+        # Backdate updated_at
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+        db.execute("UPDATE sprints SET updated_at = ? WHERE id = ?",
+                   (old_time, s["id"]))
+        db.commit()
+        sprint = db.get_sprint(s["id"])
+        actions = _check_contract_timeout(db, sprint, dry_run=False)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "contract_timeout"
+        assert db.get_sprint(s["id"])["status"] == SprintStatus.FAILED
+
+
+class TestHeartbeat:
+    def test_non_active_sprint_skipped(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        sprint = db.get_sprint(s["id"])
+        # CONTRACTED sprint — heartbeat check should skip it
+        actions = _check_heartbeat(db, {"id": b["id"]}, sprint, dry_run=False)
+        assert len(actions) == 0
+
+    def test_active_sprint_no_logs_skipped(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        transition_sprint(db, s["id"], SprintStatus.BUILDING)
+        sprint = db.get_sprint(s["id"])
+        # No agent logs yet — should skip
+        actions = _check_heartbeat(db, {"id": b["id"]}, sprint, dry_run=False)
+        assert len(actions) == 0
+
+    def test_sprint_timeout(self, db, tmp_path):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        transition_sprint(db, s["id"], SprintStatus.BUILDING)
+        # Create agent log with a log file
+        log_path = str(tmp_path / "test.log")
+        Path(log_path).write_text("some log output")
+        db.create_agent_log(b["id"], "generator", sprint_id=s["id"],
+                            session_id="tmux:test:w1", log_path=log_path)
+        # Backdate sprint updated_at to trigger timeout
+        old_time = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+        db.execute("UPDATE sprints SET updated_at = ? WHERE id = ?",
+                   (old_time, s["id"]))
+        db.commit()
+        sprint = db.get_sprint(s["id"])
+        actions = _check_heartbeat(db, {"id": b["id"]}, sprint, dry_run=False)
+        timeout_actions = [a for a in actions if a["action"] == "sprint_timeout"]
+        assert len(timeout_actions) == 1
+        assert db.get_sprint(s["id"])["status"] == SprintStatus.FAILED
+
+
+class TestAgentHealth:
+    def test_non_active_sprint_skipped(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        sprint = db.get_sprint(s["id"])
+        backend = MagicMock()
+        actions = _check_agent_health(db, {"id": b["id"]}, sprint,
+                                      backend, dry_run=False)
+        assert len(actions) == 0
+
+    def test_no_logs_skipped(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        transition_sprint(db, s["id"], SprintStatus.BUILDING)
+        sprint = db.get_sprint(s["id"])
+        backend = MagicMock()
+        actions = _check_agent_health(db, {"id": b["id"]}, sprint,
+                                      backend, dry_run=False)
+        assert len(actions) == 0
+
+    def test_alive_agent_no_action(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        transition_sprint(db, s["id"], SprintStatus.BUILDING)
+        db.create_agent_log(b["id"], "generator", sprint_id=s["id"],
+                            session_id="tmux:test:w1", log_path="/tmp/test.log")
+        sprint = db.get_sprint(s["id"])
+        backend = MagicMock()
+        backend.is_alive.return_value = True
+        actions = _check_agent_health(db, {"id": b["id"]}, sprint,
+                                      backend, dry_run=False)
+        assert len(actions) == 0
+
+    def test_dead_agent_max_attempts_escalates(self, db):
+        b = db.create_build("Test")
+        s = _setup_contracted_sprint(db, b["id"], 1, "Sprint 1")
+        transition_sprint(db, s["id"], SprintStatus.BUILDING)
+        # Max out attempts
+        for _ in range(3):
+            db.increment_sprint_attempts(s["id"])
+        db.create_agent_log(b["id"], "generator", sprint_id=s["id"],
+                            session_id="tmux:test:w1", log_path="/tmp/test.log")
+        sprint = db.get_sprint(s["id"])
+        backend = MagicMock()
+        backend.is_alive.return_value = False
+        actions = _check_agent_health(db, {"id": b["id"]}, sprint,
+                                      backend, dry_run=False)
+        assert len(actions) == 1
+        assert actions[0]["action"] == "sprint_escalated"
+        assert db.get_sprint(s["id"])["status"] == SprintStatus.FAILED
